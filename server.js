@@ -341,7 +341,7 @@ app.post('/enviar-confirmacion', async (req, res) => {
     service: 'gmail',
     auth: {
       user: 'paco.666.x@gmail.com',
-      pass: 'fndiqfxizsddymhx' // NUNCA pongas la contraseña normal
+      pass: 'fduxzqpecubopvqm' // NUNCA pongas la contraseña normal
     }
   });
 
