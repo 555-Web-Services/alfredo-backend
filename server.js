@@ -340,8 +340,8 @@ app.post('/enviar-confirmacion', async (req, res) => {
   const transporter = nodemailer.createTransport({
     service: 'gmail',
     auth: {
-      user: 'paco.666.x@gmail.com',
-      pass: 'fduxzqpecubopvqm' // NUNCA pongas la contraseña normal
+      user: process.env.EMAIL_USER,
+      pass: process.env.EMAIL_PASS
     }
   });
 
