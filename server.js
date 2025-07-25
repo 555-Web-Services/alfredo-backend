@@ -28,6 +28,32 @@ const uploadDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir);
 app.use('/uploads', express.static(uploadDir));
 
+const discografiaPaths = {
+  portadas: path.join(__dirname, 'uploads/discografia/portadas'),
+  contraportadas: path.join(__dirname, 'uploads/discografia/contraportadas'),
+  canciones: path.join(__dirname, 'uploads/discografia/canciones'),
+};
+
+Object.values(discografiaPaths).forEach(dir => {
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+});
+
+
+const discografiaStorage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    if (file.fieldname === 'portada') cb(null, discografiaPaths.portadas);
+    else if (file.fieldname === 'contraportada') cb(null, discografiaPaths.contraportadas);
+    else if (file.fieldname === 'cancionAudio[]') cb(null, discografiaPaths.canciones);
+  },
+  filename: (req, file, cb) => {
+    const nombre = Date.now() + '-' + file.originalname.replace(/\s+/g, '_');
+    cb(null, nombre);
+  }
+});
+
+const discografiaUpload = multer({ storage: discografiaStorage });
+
+
 // === Configurar multer ===
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, uploadDir),
@@ -81,6 +107,21 @@ db.serialize(() => {
   mensaje TEXT,
   emisor TEXT, -- 'cliente' o 'admin'
   fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+)`);
+  db.run(`CREATE TABLE IF NOT EXISTS albums (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  titulo TEXT NOT NULL,
+  descripcion TEXT NOT NULL,
+  portada TEXT,
+  contraportada TEXT
+)`);
+
+db.run(`CREATE TABLE IF NOT EXISTS canciones (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  album_id INTEGER,
+  titulo TEXT NOT NULL,
+  archivo TEXT,
+  FOREIGN KEY (album_id) REFERENCES albums(id)
 )`);
 
 });
@@ -364,6 +405,137 @@ app.post('/enviar-confirmacion', async (req, res) => {
   }
 });
 
+//Album
+
+app.post('/api/discografia', discografiaUpload.fields([
+  { name: 'portada', maxCount: 1 },
+  { name: 'contraportada', maxCount: 1 },
+  { name: 'cancionAudio[]' }
+]), (req, res) => {
+  const { titulo, descripcion, cancionTitulo } = req.body;
+
+  const portada = req.files['portada']?.[0]?.filename || '';
+const contraportada = req.files['contraportada']?.[0]?.filename || '';
+const cancionesArchivos = req.files['cancionAudio[]'] || [];
+
+  db.run(
+    `INSERT INTO albums (titulo, descripcion, portada, contraportada) VALUES (?, ?, ?, ?)`,
+    [
+  titulo,
+  descripcion,
+  `uploads/discografia/portadas/${portada}`,
+  `uploads/discografia/contraportadas/${contraportada}`
+]
+,
+    function (err) {
+      if (err) return res.status(500).json({ error: 'Error al guardar álbum' });
+
+      const albumId = this.lastID;
+      const titulos = Array.isArray(cancionTitulo) ? cancionTitulo : [cancionTitulo];
+
+      const stmt = db.prepare(`INSERT INTO canciones (album_id, titulo, archivo) VALUES (?, ?, ?)`);
+      for (let i = 0; i < titulos.length; i++) {
+        const archivo = `uploads/discografia/canciones/${cancionesArchivos[i]?.filename || ''}`;
+stmt.run(albumId, titulos[i], archivo);
+
+      }
+      stmt.finalize();
+
+      res.json({ mensaje: 'Álbum guardado correctamente' });
+    }
+  );
+});
+
+app.get('/api/discografia', (req, res) => {
+  const baseUrl = `${req.protocol}://${req.headers.host}`;
+
+  db.all('SELECT * FROM albums', [], (err, albums) => {
+    if (err) return res.status(500).json({ error: 'Error al obtener álbumes' });
+
+    let pendientes = albums.length;
+    const resultado = [];
+
+    if (pendientes === 0) return res.json([]);
+
+    albums.forEach(album => {
+      db.all('SELECT * FROM canciones WHERE album_id = ?', [album.id], (err2, canciones) => {
+        if (err2) return res.status(500).json({ error: 'Error al obtener canciones' });
+
+        resultado.push({
+          ...album,
+          portada: `${baseUrl}/${album.portada.replace(/\\/g, '/')}`,
+          contraportada: `${baseUrl}/${album.contraportada.replace(/\\/g, '/')}`,
+          canciones: canciones.map(c => ({
+            titulo: c.titulo,
+            archivo: `${baseUrl}/${c.archivo.replace(/\\/g, '/')}`
+          }))
+        });
+
+        pendientes--;
+        if (pendientes === 0) {
+          res.json(resultado);
+        }
+      });
+    });
+  });
+});
+
+app.delete('/api/discografia/:id', (req, res) => {
+  const albumId = req.params.id;
+
+  db.serialize(() => {
+    db.run('DELETE FROM canciones WHERE album_id = ?', [albumId], err => {
+      if (err) return res.status(500).json({ error: 'Error al eliminar canciones' });
+
+      db.run('DELETE FROM albums WHERE id = ?', [albumId], err2 => {
+        if (err2) return res.status(500).json({ error: 'Error al eliminar álbum' });
+
+        res.json({ message: 'Álbum eliminado correctamente' });
+      });
+    });
+  });
+});
+
+app.put('/api/discografia/:id', discografiaUpload.fields([
+  { name: 'portada', maxCount: 1 },
+  { name: 'contraportada', maxCount: 1 },
+  { name: 'cancionAudio[]' }
+]), (req, res) => {
+  const albumId = req.params.id;
+  const { titulo, descripcion, cancionTitulo } = req.body;
+
+  const portada = req.files['portada']?.[0]?.filename;
+  const contraportada = req.files['contraportada']?.[0]?.filename;
+  const nuevasCanciones = req.files['cancionAudio[]'] || [];
+
+  // 1. Actualizar título y descripción (y portada si viene)
+  db.run(
+    `UPDATE albums SET titulo = ?, descripcion = ?, portada = COALESCE(?, portada), contraportada = COALESCE(?, contraportada) WHERE id = ?`,
+    [titulo, descripcion, portada ? `uploads/discografia/portadas/${portada}` : null, contraportada ? `uploads/discografia/contraportadas/${contraportada}` : null, albumId],
+    function (err) {
+      if (err) return res.status(500).json({ error: 'Error al actualizar álbum' });
+
+      // 2. Si se subieron nuevas canciones, eliminamos las anteriores y agregamos nuevas
+      if (nuevasCanciones.length > 0) {
+        db.run('DELETE FROM canciones WHERE album_id = ?', [albumId], err2 => {
+          if (err2) return res.status(500).json({ error: 'Error al eliminar canciones antiguas' });
+
+          const titulos = Array.isArray(cancionTitulo) ? cancionTitulo : [cancionTitulo];
+          const stmt = db.prepare('INSERT INTO canciones (album_id, titulo, archivo) VALUES (?, ?, ?)');
+          for (let i = 0; i < titulos.length; i++) {
+            const archivo = `uploads/discografia/canciones/${nuevasCanciones[i]?.filename || ''}`;
+            stmt.run(albumId, titulos[i], archivo);
+          }
+          stmt.finalize();
+
+          res.json({ mensaje: 'Álbum actualizado con canciones nuevas' });
+        });
+      } else {
+        res.json({ mensaje: 'Álbum actualizado (sin cambios de canciones)' });
+      }
+    }
+  );
+});
 
 
 http.listen(3000, () => {
